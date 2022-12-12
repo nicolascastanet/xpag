@@ -1,1 +1,1 @@
-from xpag.setters.setter import Setter, DefaultSetter, CompositeSetter
+from xpag.setters.setter import Setter, DefaultSetter, UniformSetter, CompositeSetter

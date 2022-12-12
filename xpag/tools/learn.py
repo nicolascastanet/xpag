@@ -7,6 +7,7 @@ from xpag.tools.timing import timing_reset
 from xpag.buffers import Buffer
 from xpag.agents.agent import Agent
 from xpag.setters.setter import Setter
+from xpag.plotting.plotting import plot_achieved_goals, update_csv
 from typing import Dict, Any, Union, List, Optional, Callable
 
 
@@ -117,10 +118,22 @@ def learn(
                 seed=master_rng.randint(1e9),
             )
 
+            #if i > 0:
+            #    buffers = buffer.pre_sample()
+            #    episode_max = buffers["episode_length"].shape[0]
+            #    episode_range = evaluate_every_x_steps // env_info['max_episode_steps']
+            #    last_episode_idxs = np.arange(episode_max - episode_range, episode_max)
+            #        
+            #    # visualisation of achievd and behavior goals
+            #    #plot_achieved_goals(buffers, last_episode_idxs, i*env_info["num_envs"], save_dir)
+            #    intrinsic_success = buffers["is_success"][last_episode_idxs].max(axis=1).mean()
+            #    update_csv("intrinsic_success", intrinsic_success, i*env_info["num_envs"], save_dir)
+
         if not i % max(save_agent_every_x_steps // env_info["num_envs"], 1):
             if save_dir is not None:
                 agent.save(os.path.join(os.path.expanduser(save_dir), "agent"))
                 setter.save(os.path.join(os.path.expanduser(save_dir), "setter"))
+
 
         action_info = {}
         if i * env_info["num_envs"] < start_training_after_x_steps:
@@ -159,6 +172,7 @@ def learn(
             for a_s_key in additional_step_keys:
                 if a_s_key in info:
                     step[a_s_key] = info[a_s_key]
+
         buffer.insert(step)
         observation = next_observation
 

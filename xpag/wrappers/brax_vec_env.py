@@ -36,7 +36,6 @@ def brax_vec_env_(
     env_name: str,
     num_envs: int,
     wrap_function: Callable = None,
-    *,
     force_cpu_backend=False,
 ):
     from brax import envs  # lazy import

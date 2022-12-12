@@ -37,6 +37,7 @@ class HER(Sampler):
         transitions = {
             key: buffers[key][episode_idxs, t_samples] for key in buffers.keys()
         }
+
         # HER indexes
         her_indexes = np.where(np.random.uniform(size=batch_size) < self.future_p)
 
@@ -49,6 +50,9 @@ class HER(Sampler):
         future_ag = buffers["next_observation.achieved_goal"][
             episode_idxs[her_indexes], future_t
         ]
+
+        #import ipdb;ipdb.set_trace()
+
         transitions["observation.desired_goal"][her_indexes] = future_ag
         # recomputing rewards
         transitions["reward"] = np.expand_dims(

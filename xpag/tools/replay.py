@@ -50,6 +50,8 @@ def mujoco_notebook_replay(load_dir: str):
 
     def compute_image(step):
         env_replay.set_state(qpos[step], qvel[step])
+
+        #import ipdb;ipdb.set_trace()
         img_ = Image.fromarray(env_replay.render())
         ImageDraw.Draw(img_).text((0, 0), f"step: {step}", (255, 255, 255))
         return img_
