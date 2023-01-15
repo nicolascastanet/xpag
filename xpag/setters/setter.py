@@ -200,7 +200,7 @@ class SvggSetter(Setter, ABC):
 
         # Init current goals
         init_goal_idxs = np.random.choice(self.n,self.num_envs)
-        self.current_goals = self.particles.cpu()[init_goal_idxs]
+        self.current_goals = self.particles.cpu().numpy()[init_goal_idxs]
 
         # Prior param
         self.prior_oe = 1000 // num_envs
