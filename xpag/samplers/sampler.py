@@ -38,6 +38,7 @@ class DefaultSampler(Sampler):
             size=batch_size,
             replace=True,
         )
+
         transitions = {key: buffer[key][idxs] for key in buffer.keys()}
         return transitions
 

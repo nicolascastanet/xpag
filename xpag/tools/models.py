@@ -7,6 +7,7 @@ from imblearn.over_sampling import RandomOverSampler
 import os
 from typing import Callable
 from abc import ABC, abstractmethod
+from sklearn.linear_model import SGDClassifier
 
 
 
@@ -32,34 +33,129 @@ class DROPOUT(nn.Module):
     return F.dropout(input, p=self.p)
 
 
+
+def train_torch_model(
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        dataloader: torch.utils.data.DataLoader,
+        criterion,
+        nb_steps=100
+        ):
+
+        for _ in range(nb_steps):
+            for x, y in dataloader:
+                
+                output = model(x)
+                loss = criterion(output, y.reshape(-1,1))
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+
 class MLP(nn.Module):
-  def __init__(
+    """Standard feedforward network.
+    Args:
+      input_size (int): number of input features
+      output_size (int): number of output features
+      hidden_sizes (int tuple): sizes of hidden layers
+
+      norm: pre-activation module (e.g., nn.LayerNorm)
+      activ: activation module (e.g., GELU, nn.ReLU)
+      drop_prob: dropout probability to apply between layers (not applied to input)
+    """
+    def __init__(
         self, 
         input_size, 
-        layer_sizes=(256, 256), 
-        norm = nn.Identity, 
-        activ = GELU, 
-        use_layer_init = True
+        output_size=1, 
+        layers=(256, 256), 
+        norm=nn.Identity, 
+        activ=nn.ReLU, 
+        drop_prob=0.
     ):
-    
-    super(MLP, self).__init__()
-    self.feature_dim = layer_sizes[-1]
+        super().__init__()
+        self.output_size = output_size
 
-    layer_sizes = (input_size, ) + tuple(layer_sizes)
-    layers = []
-    for dim_in, dim_out in zip(layer_sizes[:-1], layer_sizes[1:]):
-      layers += [
-          nn.Linear(dim_in, dim_out),
-          norm(dim_out), activ(),
-      ]
-    if use_layer_init:
-      layers = list(map(layer_init, layers))
-    self.f = nn.Sequential(*layers)
+        layer_sizes = (input_size, ) + tuple(layers) + (output_size, )
+        if len(layer_sizes) == 2:
+            layers = [nn.Linear(layer_sizes[0], layer_sizes[1], bias=False)]
+        else:
+            layers = []
+            for dim_in, dim_out in zip(layer_sizes[:-1], layer_sizes[1:]):
+                layers.append(nn.Linear(dim_in, dim_out))
+                if norm not in [None, nn.Identity]:
+                    layers.append(norm(dim_out))
+                layers.append(activ())
+                if drop_prob > 0.:
+                    layers.append(nn.Dropout(p=drop_prob))
+            layers = layers[:-(1 + (norm not in [None, nn.Identity]) + (drop_prob > 0))]
+            layers = list(map(layer_init, layers))
+        self.f = nn.Sequential(*layers)
 
-  def forward(self, x):
-    return self.f(x)
+    def forward(self, x):
+        return torch.sigmoid(self.f(x))
 
 
+
+
+
+
+class OCSVM(nn.Module):
+    def __init__(self, kernel,sk_model):
+        super(OCSVM, self).__init__()
+        self.kernel = kernel
+        self.sk_model = sk_model
+        self.rand_nb_scale = 1000
+        self.penalty = 0.0001
+        self.device = torch.device("cuda")
+
+    def fit(self,X:np.array):
+        """input : np.array"""
+        
+        self.sk_model.fit(X)
+        self.X_supp = torch.from_numpy(self.sk_model.support_vectors_).type(torch.float).to(self.device) # support vectors
+        self.A = torch.from_numpy(self.sk_model.dual_coef_).type(torch.float).to(self.device) # alpha dual coef
+        self.B = torch.from_numpy(self.sk_model.intercept_).type(torch.float).to(self.device) # decision biais
+        self.calibration(X)
+
+
+    def calibration(self, x):
+        x_min, x_max = np.min(x,axis=0), np.max(x,axis=0)
+        x_range = x_max - x_min
+        while True:
+            rd_X = np.random.uniform(low=x_min - x_range,
+                                     high=x_min + x_range, 
+                                     size=(self.rand_nb_scale,x.shape[1])
+                                    )
+            y = self.sk_model.predict(rd_X).reshape(-1,1)
+            if y.sum() > -len(y) and y.sum() < len(y) : # check if there is 2 classes
+                break
+        X = self.sk_model.decision_function(rd_X).reshape(-1,1)
+        
+        clf = SGDClassifier(loss='modified_huber',alpha=self.penalty)
+        clf.fit(X,y) 
+        self.w = torch.from_numpy(clf.coef_).type(torch.float).to(self.device)
+        self.b = torch.from_numpy(clf.intercept_).type(torch.float).to(self.device)
+
+    def logistic(self, x):
+        return torch.sigmoid(torch.mm(x, self.w)+ self.b)
+        
+
+    def forward(self, x):
+        """input : torch.tensor"""
+
+        if self.sk_model.fit_status_:
+            raise NameError('Sklearn model not fitted !')
+        
+        K = self.kernel(x,self.X_supp) # kernel matrix
+        scores = torch.mm(K,self.A.reshape(self.X_supp.shape[0],-1)) + self.B # decision function
+        return scores
+
+
+    def log_prob(self,x,log=True):
+        if log:
+            return torch.log(self.logistic(self.forward(x)))
+        return self.logistic(self.forward(x))
 
 
 
@@ -84,17 +180,18 @@ class LogisticRegression(torch.nn.Module):
         self.b = torch.nn.Parameter(torch.randn(1))
 
 
-class OCSVM(torch.nn.Module):
+class OCSVM_0(torch.nn.Module):
     """
     PyTorch implementation on One class SVM with probability calibration
     """
-    def __init__(self, kernel,sk_model, device):
-        super(OCSVM, self).__init__()
+    def __init__(self, kernel,sk_model):
+        super(OCSVM_0, self).__init__()
         self.kernel = kernel
         self.sk_model = sk_model
-        self.device = device
+        assert  torch.cuda.is_available()
+        self.device = torch.device("cuda")
         self.logistic = LogisticRegression(input_size=1)
-        self.logistic.to(device)
+        self.logistic.to(self.device)
         self.fit_status = False
 
     def fit(self,X):

@@ -11,10 +11,6 @@ class Criterion(ABC):
         self.name = name
 
     @abstractmethod
-    def score_goals(self, goals, eval_mode=False):
-        pass
-
-    @abstractmethod
     def write_config(self, output_file: str):
         pass
 
@@ -29,33 +25,45 @@ class Criterion(ABC):
 
 
 class AlphaBetaDifficulty(Criterion, ABC):
-    def __init__(self, alpha, beta, success_predictor, env):
+    def __init__(
+        self, 
+        alpha, 
+        beta, 
+        model,
+        prior, 
+        init_state, 
+        temp=20
+    ):
         super().__init__("AlphaBetaDifficulty")
 
-        assert  torch.cuda.is_available()
         self.device = torch.device("cuda")
 
-        # Beta distribution
+        # Distribution parameters
         self.alpha = torch.tensor(alpha).to(self.device)
         self.beta = torch.tensor(beta).to(self.device)
-        self.beta_distrib = Beta(self.alpha,self.beta).to(self.device)
+        self.beta_distrib = Beta(self.alpha,self.beta)
+        self.temp = temp
 
-        # Goal predictor
-        self.success_predictor = success_predictor
+        # We need the model of the agent's skills and the environment to compute the criterion
+        self.model = model
+        self.init_state = init_state
+        self.prior = prior
+        self.only_prior = False
 
-        # Environement
-        self.env = env
 
-    def score_goals(self, goals, eval_mode=False):
+    def log_prob(self, goals, eval_mode=False, log=True):  
 
-        init_obs_batch = torch.from_numpy(self.env.reset()["achieved_goal"]).repeat(goals.shape[0],1)
+        if self.only_prior:
+            return self.prior.log_prob(goals)
 
-        goals_init_obs = torch.cat((init_obs_batch.to(self.device),goals),dim=1)
-        probas = torch.sigmoid(self.success_predictor.model(goals_init_obs))
+        init_obs_batch = self.init_state.repeat(goals.shape[0],1).to(self.device)
 
-        criterion = torch.exp(self.beta.log_prob(probas))
+        goals_init_obs = torch.cat((init_obs_batch,goals),dim=1)
+        probas = self.model(goals_init_obs)
 
-        return criterion
+        criterion = torch.exp(self.beta_distrib.log_prob(probas))
+
+        return self.temp * criterion + self.prior.log_prob(goals)
 
 
     def write_config(self, output_file: str):

@@ -65,10 +65,9 @@ class SVGD:
         assert  torch.cuda.is_available()
         self.device = torch.device("cuda")
 
-    def phi(self, X,t,ann=1):
+    def phi(self, X,ann=1):
         X = X.detach().requires_grad_(True).to(self.device)
 
-        
         log_prob = self.P.log_prob(X)
         score_func = autograd.grad(log_prob.sum(), X, retain_graph=True)[0]
 
@@ -77,17 +76,17 @@ class SVGD:
             
         K_XX = self.K(X, X.detach())
         grad_K = -autograd.grad(K_XX.sum(), X)[0]
-        if grad_K.isnan().any():
-            import ipdb;ipdb.set_trace()
+        #if grad_K.isnan().any():
+        #    import ipdb;ipdb.set_trace()
 
         phi = (K_XX.detach().matmul(score_func)*ann + grad_K) / X.size(0)
         if phi.isnan().any():
             phi = torch.nan_to_num(phi)            
         return phi
 
-    def step(self, X,t,ann=False):
+    def step(self, X,ann=1):
         self.optim.zero_grad()
-        X.grad = -self.phi(X,t,ann)
+        X.grad = -self.phi(X,ann)
         if X.grad.isnan().any():
             import ipdb;ipdb.set_trace()
         self.optim.step()

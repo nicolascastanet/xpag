@@ -11,6 +11,7 @@ from xpag.tools.utils import DataType, datatype_convert, hstack, logical_or
 from xpag.tools.timing import timing
 from xpag.tools.logging import eval_log
 from xpag.plotting.plotting import single_episode_plot
+from xpag.plotting.plotting import plot_achieved_goals, update_csv
 
 
 class SaveEpisode:
@@ -23,6 +24,8 @@ class SaveEpisode:
         self.qrot = []
         self.qvel = []
         self.qang = []
+        self.target_pos = []
+
 
     def update(self):
         if self.env_info["env_type"] == "Brax":
@@ -38,6 +41,15 @@ class SaveEpisode:
             )
             self.qpos.append(posvel[0])
             self.qvel.append(posvel[1])
+
+        elif self.env_info["env_type"] == "Fetch":
+            qpos = np.copy(self.env.data.qpos)
+            qvel = np.copy(self.env.data.qvel)
+            target_pos = np.copy(self.env.goal)
+
+            self.qpos.append(qpos)
+            self.qvel.append(qvel)
+            self.target_pos.append(target_pos)
         else:
             pass
 
@@ -71,6 +83,21 @@ class SaveEpisode:
             np.save(
                 os.path.join(save_dir, "episode", "qvel"), [vel[i] for vel in self.qvel]
             )
+
+        elif self.env_info["env_type"] == "Fetch":
+            with open(os.path.join(save_dir, "episode", "env_name.txt"), "w") as f:
+                print(self.env_info["name"], file=f)
+            np.save(
+                os.path.join(save_dir, "episode", "qpos"), self.qpos
+            )
+            np.save(
+                os.path.join(save_dir, "episode", "qvel"), self.qvel
+            )
+            np.save(
+                os.path.join(save_dir, "episode", "target"), self.target_pos
+            )
+            
+        #import ipdb;ipdb.set_trace()
 
         self.qpos = []
         self.qrot = []
@@ -144,11 +171,11 @@ def single_rollout_eval(
         save_dir,
     )
     if plot_projection is not None and save_dir is not None:
-        os.makedirs(os.path.join(os.path.expanduser(save_dir), "plots"), exist_ok=True)
+        os.makedirs(os.path.join(os.path.expanduser(save_dir), "plots", "episodes"), exist_ok=True)
         single_episode_plot(
             os.path.join(
                 os.path.expanduser(save_dir),
-                "plots",
+                "plots", "episodes",
                 f"{steps:12}.png".replace(" ", "0"),
             ),
             step_list,
@@ -158,3 +185,53 @@ def single_rollout_eval(
     if save_episode and save_dir is not None:
         save_ep.save(0, os.path.expanduser(save_dir))
     timing()
+
+
+
+
+
+def multiple_rollout_eval(
+    steps: int,
+    eval_env: Any,
+    env_info: Dict[str, Any],
+    agent: Agent,
+    setter: Setter,
+    save_dir: Union[str, None] = None,
+    env_datatype: Optional[DataType] = None,
+    seed: Optional[int] = None,
+):
+    """Evaluation performed on a single run"""
+    master_rng = np.random.RandomState(
+        seed if seed is not None else np.random.randint(1e9)
+    )
+    observation, _ = setter.reset(
+        eval_env,
+        *eval_env.reset(seed=master_rng.randint(1e9)),
+        eval_mode=True,
+    )
+
+    done = np.array([False]*eval_env.num_envs) 
+    while not np.all(done):
+        obs = (
+            observation
+            if not env_info["is_goalenv"]
+            else hstack(observation["observation"], observation["desired_goal"])
+        )
+        action = agent.select_action(obs, eval_mode=True)
+        action_info = {}
+        if isinstance(action, tuple):
+            action_info = action[1]
+            action = action[0]
+        action = datatype_convert(action, env_datatype)
+        next_observation, reward, terminated, truncated, info = setter.step(
+            eval_env,
+            observation,
+            action,
+            action_info,
+            *eval_env.step(action),
+            eval_mode=True,
+        )
+        done = logical_or(terminated, truncated)
+        observation = next_observation
+    
+    update_csv("average success", info["is_success"].mean(), steps, save_dir)

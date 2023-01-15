@@ -3,6 +3,7 @@
 # Licensed under the BSD 3-Clause License.
 
 import numpy as np
+import inspect
 from xpag.samplers.sampler import Sampler
 
 
@@ -19,7 +20,15 @@ class HER(Sampler):
             self.future_p = 1 - (1.0 / (1 + self.replay_k))
         else:
             self.future_p = 0
-        self.reward_func = compute_reward
+
+        # Check if compute func has enough params
+        if len(inspect.signature(compute_reward).parameters) < 4:
+            def wrapped_reward_func(achieved_goal, goal, info, *args):
+                return compute_reward(achieved_goal, goal, info)
+
+            self.reward_func = wrapped_reward_func
+        else:
+            self.reward_func = compute_reward
 
     def sample(self, buffers, batch_size_in_transitions):
         rollout_batch_size = buffers["episode_length"].shape[0]
@@ -51,9 +60,9 @@ class HER(Sampler):
             episode_idxs[her_indexes], future_t
         ]
 
-        #import ipdb;ipdb.set_trace()
-
+        
         transitions["observation.desired_goal"][her_indexes] = future_ag
+        
         # recomputing rewards
         transitions["reward"] = np.expand_dims(
             self.reward_func(

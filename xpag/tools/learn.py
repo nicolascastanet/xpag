@@ -1,6 +1,10 @@
+import cProfile
+import re
+import pstats, io
+from pstats import SortKey
 import os
 import numpy as np
-from xpag.tools.eval import single_rollout_eval
+from xpag.tools.eval import single_rollout_eval, multiple_rollout_eval
 from xpag.tools.utils import get_datatype, datatype_convert, hstack, logical_or
 from xpag.tools.logging import eval_log_reset
 from xpag.tools.timing import timing_reset
@@ -14,6 +18,7 @@ from typing import Dict, Any, Union, List, Optional, Callable
 def learn(
     env,
     eval_env,
+    mult_eval_env,
     env_info: Dict[str, Any],
     agent: Agent,
     buffer: Buffer,
@@ -103,6 +108,7 @@ def learn(
     else:
         rollout_eval = custom_eval_function
 
+    eval_cpt = 0
     for i in range(max_steps // env_info["num_envs"]):
         if not i % max(evaluate_every_x_steps // env_info["num_envs"], 1):
             rollout_eval(
@@ -118,16 +124,39 @@ def learn(
                 seed=master_rng.randint(1e9),
             )
 
-            #if i > 0:
-            #    buffers = buffer.pre_sample()
-            #    episode_max = buffers["episode_length"].shape[0]
-            #    episode_range = evaluate_every_x_steps // env_info['max_episode_steps']
-            #    last_episode_idxs = np.arange(episode_max - episode_range, episode_max)
-            #        
-            #    # visualisation of achievd and behavior goals
-            #    #plot_achieved_goals(buffers, last_episode_idxs, i*env_info["num_envs"], save_dir)
-            #    intrinsic_success = buffers["is_success"][last_episode_idxs].max(axis=1).mean()
-            #    update_csv("intrinsic_success", intrinsic_success, i*env_info["num_envs"], save_dir)
+            multiple_rollout_eval(
+                i * env_info["num_envs"],
+                mult_eval_env,
+                env_info,
+                agent,
+                setter,
+                save_dir=save_dir,
+                env_datatype=env_datatype,
+                seed=master_rng.randint(1e9),
+            )
+
+
+            #eval_cpt+=1
+#
+            #if eval_cpt==3:
+            #    pr = cProfile.Profile()
+            #    pr.enable()
+            #    print("#"*20)
+            #    print("start profiling")
+            #    print("#"*20)
+
+            if env_info['is_goalenv'] and i > 0:
+                buffers = buffer.pre_sample()
+                episode_max = buffer.current_size
+                episode_range = evaluate_every_x_steps // env_info['max_episode_steps']
+                last_episode_idxs = np.arange(episode_max - episode_range, episode_max - env_info["num_envs"])
+                    
+                # Visualisation of achievd and behavior goals
+                #plot_achieved_goals(buffers, last_episode_idxs, i*env_info["num_envs"], save_dir)
+                intrinsic_success = buffers["is_success"][last_episode_idxs].max(axis=1).mean()
+                update_csv("intrinsic_success", intrinsic_success, i*env_info["num_envs"], save_dir)
+
+                #import ipdb;ipdb.set_trace()
 
         if not i % max(save_agent_every_x_steps // env_info["num_envs"], 1):
             if save_dir is not None:
@@ -149,9 +178,10 @@ def learn(
                 action_info = action[1]
                 action = action[0]
             if i > 0:
-                for _ in range(max(gd_steps_per_step * env_info["num_envs"], 1)):
+                for _ in range(int(max(gd_steps_per_step * env_info["num_envs"], 1))):
                     _ = agent.train_on_batch(buffer.sample(batch_size))
 
+        
         action = datatype_convert(action, env_datatype)
 
         next_observation, reward, terminated, truncated, info = setter.step(
@@ -186,3 +216,13 @@ def learn(
                 *env.reset_done(done, seed=master_rng.randint(1e9)),
                 done,
             )
+
+        #if eval_cpt==3:
+        #    pr.disable()
+        #    s = io.StringIO()
+        #    sortby = SortKey.CUMULATIVE
+        #    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+        #    ps.print_stats()
+        #    print(s.getvalue())
+#
+        #    import ipdb;ipdb.set_trace()

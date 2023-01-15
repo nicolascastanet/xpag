@@ -1,2 +1,2 @@
-from xpag.svgg.success_prediction import GoalSuccessPredictor
 from xpag.svgg.svgd import RBF, SVGD
+from xpag.svgg.criterion import AlphaBetaDifficulty, MinDensity

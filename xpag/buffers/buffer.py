@@ -239,6 +239,27 @@ class DefaultEpisodicBuffer(EpisodicBuffer):
     def sample(self, batch_size):
         return self.sampler.sample(self.pre_sample(), batch_size)
 
+    def sample_random(self, batch_size):
+        episode_idxs = np.random.choice(self.current_size, batch_size)
+        temp_buffers = {}
+        for key in self.buffers.keys():
+            temp_buffers[key] = self.buffers[key][episode_idxs]
+        return temp_buffers
+
+    def sample_recent(self, batch_size, history_length):
+
+        episode_idxs = np.random.randint(max(self.current_size - history_length, 0), 
+                            self.current_size, 
+                            size=batch_size
+                        )
+                        
+        buffers = self.pre_sample()
+        recent_buffers = {
+            key: buffers[key][episode_idxs] for key in buffers.keys()
+        }
+        return recent_buffers
+
+
     def _get_storage_idx(self, inc=None):
         inc = inc or 1
         if self.current_size + inc <= self.size:
