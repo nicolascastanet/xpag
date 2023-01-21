@@ -37,7 +37,7 @@ class RBF(torch.nn.Module):
             self.sig_median=sigma
         else:
             sigma = self.sigma
-
+            
         if self.gamma is None:
             gamma = 1.0 / (1e-8 + 2 * sigma ** 2)
         else:
@@ -67,7 +67,7 @@ class SVGD:
 
     def phi(self, X,ann=1):
         X = X.detach().requires_grad_(True).to(self.device)
-
+        
         log_prob = self.P.log_prob(X)
         score_func = autograd.grad(log_prob.sum(), X, retain_graph=True)[0]
 

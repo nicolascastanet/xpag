@@ -1,1 +1,1 @@
-from xpag.setters.setter import Setter, DefaultSetter, DensitySetter, UniformSetter, SvggSetter, CompositeSetter
+from xpag.setters.setter import Setter, DefaultSetter, RandomSetter, DensitySetter, GoalGanSetter, UniformSetter, SvggSetter, CompositeSetter

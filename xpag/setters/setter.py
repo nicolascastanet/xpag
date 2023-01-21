@@ -15,11 +15,13 @@ import torch
 import torch.nn as nn
 from torch.utils import data
 import numpy as np
+from imblearn.over_sampling import SMOTE, RandomOverSampler
 
 # SVGG import
 from xpag.svgg.svgd import RBF, SVGD
+from xpag.svgg.misc import softmax
 from xpag.tools.models import train_torch_model
-from xpag.plotting.plotting import plot_decision_boundary, plot_particles, plot_prior
+from xpag.plotting.plotting import update_csv, plot_decision_boundary, plot_particles, plot_prior
 
 
 
@@ -120,6 +122,81 @@ class DefaultSetter(Setter, ABC):
 
 
 
+class RandomSetter(Setter, ABC):
+    def __init__(self, buffer, num_envs, eval_env):
+        super().__init__("RandomSetter")
+        self.buffer = buffer
+        self.num_envs = num_envs
+        self.current_goals = None
+        self.eval_env = eval_env
+        self.terminated = False
+
+    def reset(self, env, observation, info, eval_mode=False):
+        return observation, info
+
+    def reset_done(self, env, observation, info, done, eval_mode=False):
+
+        if not eval_mode:
+            # sample random achieved goals
+            buffers = self.buffer.pre_sample()
+            current_size = buffers["episode_length"].shape[0]
+            
+            episode_idxs = np.random.choice(
+                current_size,
+                size=self.num_envs,
+                replace=True,
+                p=buffers["episode_length"][:, 0, 0]
+                / buffers["episode_length"][:, 0, 0].sum(),
+                    )
+
+            t_max_episodes = buffers["episode_length"][episode_idxs, 0].flatten()
+            t_samples = np.random.randint(t_max_episodes)
+
+            transitions = {
+                    key: buffers[key][episode_idxs, t_samples] for key in buffers.keys()
+                }
+
+            ag_candidates = transitions["next_observation.achieved_goal"]
+            self.current_goals = ag_candidates
+
+
+        return observation, info, done
+
+    def step(
+        self,
+        env,
+        observation,
+        action,
+        action_info,
+        new_observation,
+        reward,
+        terminated,
+        truncated,
+        info,
+        eval_mode=False,
+    ):
+
+        if not eval_mode and self.current_goals is not None:
+            new_observation, reward, terminated, info = self.process_transition(    
+                                                                            self.current_goals,
+                                                                            new_observation, 
+                                                                            info, 
+                                                                            terminated
+                                                                            )
+
+        return new_observation, reward, terminated, truncated, info
+
+    def write_config(self, output_file: str):
+        pass
+
+    def save(self, directory: str):
+        pass
+
+    def load(self, directory: str):
+        pass
+
+
+
 
 
 class UniformSetter(Setter, ABC):
@@ -175,7 +252,9 @@ class SvggSetter(Setter, ABC):
         model,
         model_optimizer,
         prior,
-        plot
+        plot,
+        part_to_goals=lambda x: x.cpu().numpy(),
+        save_dir=None
     ):
         super().__init__("SvggSetter")
         self.eval_env = eval_env
@@ -187,6 +266,7 @@ class SvggSetter(Setter, ABC):
         self.model = model
         self.model_optimizer = model_optimizer
         self.prior = prior
+        self.save_dir = save_dir
 
         self.steps = 1
         assert  torch.cuda.is_available()
@@ -199,9 +279,10 @@ class SvggSetter(Setter, ABC):
         self.n = self.particles.shape[0]
 
         # Init current goals
+        self.part_to_goals = part_to_goals
         init_goal_idxs = np.random.choice(self.n,self.num_envs)
-        self.current_goals = self.particles.cpu().numpy()[init_goal_idxs]
-
+        self.current_goals = self.part_to_goals(self.particles)[init_goal_idxs]
+        
         # Prior param
         self.prior_oe = 1000 // num_envs
         self.prior_batch_size = 10_000
@@ -217,14 +298,22 @@ class SvggSetter(Setter, ABC):
         self.model_ready = False
 
         # Misc.
-        self.save_dir = None
-        self.particles_plot_freq = 250
+        self.particles_plot_freq = 1000
         self.model_plot_freq = 1
         self.prior_plot_freq = 1
         self.plot = plot
         self.annealed_freq = 5
         self.first_reset_done = False
         self.terminated = True
+        self.table_fetch = False
+        
+        plot_particles(
+                    self.particles, 
+                    self.criterion, 
+                    self.steps*self.num_envs,
+                    self.save_dir,
+                )
+        
 
 
     def reset(self, env, observation, info, eval_mode=False):
@@ -245,8 +334,8 @@ class SvggSetter(Setter, ABC):
             self.first_reset_done = True
             # Replace Goals when episode is done
             new_goal_idxs = np.random.choice(self.n,self.num_envs)
-            new_goals = self.particles.cpu()[new_goal_idxs]
-
+            goals = self.part_to_goals(self.particles)
+            new_goals = goals[new_goal_idxs]
             # Update current goals
             self.current_goals = np.where(done == 1, new_goals, self.current_goals)
             observation["desired_goal"] = np.copy(self.current_goals)
@@ -292,10 +381,11 @@ class SvggSetter(Setter, ABC):
                 else:
                     annealed = 1
 
+                #for _ in range(20):
                 self.svgd.step(self.particles, annealed)
                 self.particles_opt_steps += 1
-                #if self.plot:
-                #self.plot_particles(env)
+                if self.plot:
+                    self.plot_particles(env)
         
             # Optimize model
             if not self.steps % max(self.model_oe, 1):
@@ -306,6 +396,12 @@ class SvggSetter(Setter, ABC):
 
                 X = np.concatenate((init_ag, desired_g),axis=1)
                 y = buffers["is_success"].max(axis = 1)
+                states = np.copy(X); successes = np.copy(y)
+
+                # Check if there is more than 1 class
+                if y.sum() > 0 and len(y) > y.sum():
+                    oversample = RandomOverSampler()
+                    X, y = oversample.fit_resample(X, y)
 
                 X, y = torch.from_numpy(X), torch.from_numpy(y)
                 X, y = X.type(torch.float).to(self.device), y.type(torch.float).to(self.device)
@@ -325,6 +421,13 @@ class SvggSetter(Setter, ABC):
                 #if self.plot:
                 #self.plot_model(X, y, env)
                 self.model_ready = True
+                with torch.no_grad():
+                    states = torch.from_numpy(states).type(torch.FloatTensor).to(self.device)
+                    successes = torch.from_numpy(successes).type(torch.FloatTensor).to(self.device)
+                    outputs = self.model(states)
+                    acc = ((outputs > 0.5).float() == successes.reshape(-1,1)).float().mean()
+
+                update_csv("nn_acc", float(acc), self.steps * self.num_envs, self.save_dir)
 
 
             # Optimize prior
@@ -349,12 +452,16 @@ class SvggSetter(Setter, ABC):
                 transitions = {
                         key: buffers[key][episode_idxs, t_samples] for key in buffers.keys()
                     }
+                
 
                 achieved_g = transitions["next_observation.achieved_goal"]
+                if self.table_fetch:
+                    achieved_g = achieved_g[:,:2]
+                        
                 self.prior.fit(achieved_g)
                 self.prior_ready = True
-                #if self.plot:
-                #self.plot_prior(env, achieved_g)
+                if self.plot:
+                    self.plot_prior(env, achieved_g)
 
 
         return new_observation, reward, terminated, truncated, info
@@ -377,9 +484,9 @@ class SvggSetter(Setter, ABC):
             plot_particles(
                     self.particles, 
                     self.criterion, 
-                    env,
                     self.steps*self.num_envs,
-                    self.save_dir
+                    self.save_dir,
+                    env
                 )
 
     def plot_model(self, X, y, env):
@@ -405,8 +512,172 @@ class SvggSetter(Setter, ABC):
 
 
 
+class GoalGanSetter(Setter, ABC):
+    def __init__(
+        self, 
+        num_envs, 
+        eval_env,
+        buffer, 
+        model,
+        model_optimizer,
+        gan_trainer,
+        gan_gen,
+        gan_disc,
+        plot
+    ):
+        super().__init__("GoalGanSetter")
+        self.eval_env = eval_env
+        self.num_envs = num_envs
+        self.buffer = buffer        
+        self.success_pred = model
+        self.success_pred_optimizer = model_optimizer
+        self.gan_trainer = gan_trainer
+        self.gan_generator = gan_gen
+        self.gan_discriminator = gan_disc
+        self.steps = 1
+        assert  torch.cuda.is_available()
+        self.device = torch.device("cuda")
+
+        # Init current goals
+        self.current_goals = None
+
+        # Model param
+        self.model_oe = 5000 // num_envs
+        self.model_bs = 100
+        self.model_hl = 300
+        self.model_k_steps = 100
+        self.model_opt_steps = 0
+        self.model_ready = False
+
+        # Gan params
+        self.gan_oe = 2000 // num_envs
+        self.gan_warmup = 10_000 // num_envs
+        self.noise_dim = 4
+        self.gan_ready = False
+
+        # Misc.
+        self.save_dir = None
+        self.plot = plot
+        self.first_reset_done = False
+        self.terminated = True
+
+    def reset(self, env, observation, info, eval_mode=False):
+        return observation, info
+
+    def reset_done(self, env, observation, info, done, eval_mode=False):
+        
+        if not eval_mode and self.gan_ready:
+            # Replace Goals when episode is done
+            noise = torch.randn(self.num_envs, self.noise_dim).to(self.device)
+            with torch.no_grad():
+                new_goals = self.gan_generator(noise, sig=False).cpu().numpy()
+                
+            # Update current goals
+            if self.current_goals is None:
+                self.current_goals = new_goals
+            else:
+                self.current_goals = np.where(done == 1, new_goals, self.current_goals)
+            observation["desired_goal"] = np.copy(self.current_goals)
+
+        return observation, info, done
+
+    def step(
+        self,
+        env,
+        observation,
+        action,
+        action_info,
+        new_observation,
+        reward,
+        terminated,
+        truncated,
+        info,
+        eval_mode=False,
+    ):
+
+        # Count agent steps and optimize the different modules
+        self.steps += (1-eval_mode)
+        
+        if not eval_mode:
+            
+            if self.current_goals is not None:
+                new_observation, reward, terminated, info = self.process_transition(   
+                                                                            self.current_goals,
+                                                                            new_observation, 
+                                                                            info, 
+                                                                            terminated
+                                                                            )
+
+            # Optimize GAN
+            if not self.steps % max(self.gan_oe, 1) and self.model_ready and self.steps > self.gan_warmup:
+                self.gan_trainer.optimize(
+                                        self.success_pred,
+                                        self.buffer            
+                                        )
+                self.gan_ready = True
+
+
+
+            # Optimize model
+            if not self.steps % max(self.model_oe, 1):
+                
+                buffers = copy.deepcopy(self.buffer.sample_recent(self.model_bs, self.model_hl)) # Train on recent data
+                desired_g = buffers["observation.desired_goal"][:,0,:] # If same goal at every step of an episode
+                init_ag = buffers["observation.achieved_goal"][:,0,:] # Init achieved goal
+
+                X = np.concatenate((init_ag, desired_g),axis=1)
+                y = buffers["is_success"].max(axis = 1)
+
+                states = np.copy(X); successes = np.copy(y)
+
+                # Check if there is more than 1 class
+                if y.sum() > 0 and len(y) > y.sum():
+                    oversample = RandomOverSampler()
+                    X, y = oversample.fit_resample(X, y)
+
+                X, y = torch.from_numpy(X), torch.from_numpy(y)
+                X, y = X.type(torch.float).to(self.device), y.type(torch.float).to(self.device)
+                torch_train_dataset = data.TensorDataset(X,y)
+                train_dataloader = data.DataLoader(torch_train_dataset, 
+                                                    batch_size=len(torch_train_dataset))
+
+                train_torch_model(
+                                self.success_pred, 
+                                self.success_pred_optimizer, 
+                                train_dataloader, 
+                                nn.BCELoss(), 
+                                self.model_k_steps
+                            )
+
+                self.model_opt_steps += 1
+                self.model_ready = True
+
+                with torch.no_grad():
+                    states = torch.from_numpy(states).type(torch.FloatTensor).to(self.device)
+                    successes = torch.from_numpy(successes).type(torch.FloatTensor).to(self.device)
+                    outputs = self.success_pred(states)
+                    acc = ((outputs > 0.5).float() == successes.reshape(-1,1)).float().mean()
+
+                update_csv("nn_acc", float(acc), self.steps * self.num_envs, self.save_dir)
+
+        return new_observation, reward, terminated, truncated, info
+        
+
+
+    def write_config(self, output_file: str):
+        pass
+
+    def save(self, directory: str):
+        pass
+
+    def load(self, directory: str):
+        pass
+
+
+
+
 class DensitySetter(Setter, ABC):
-    def __init__(self, num_envs, buffer, kde):
+    def __init__(self, num_envs, eval_env, buffer, kde):
         super().__init__("SvggSetter")
         self.num_envs = num_envs
         self.buffer = buffer
@@ -423,6 +694,11 @@ class DensitySetter(Setter, ABC):
         self.save_dir = None
         self.warmup = 1000 // num_envs
 
+        self.terminated = False
+        self.eval_env = eval_env
+        self.current_goals = None
+        self.randomize = False
+        self.alpha = -1.
 
 
     def reset(self, env, observation, info, eval_mode=False):
@@ -438,7 +714,7 @@ class DensitySetter(Setter, ABC):
             
             episode_idxs = np.random.choice(
                 current_size,
-                size=self.num_ag_candidate,
+                size=self.num_ag_candidate * self.num_envs,
                 replace=True,
                 p=buffers["episode_length"][:, 0, 0]
                 / buffers["episode_length"][:, 0, 0].sum(),
@@ -453,14 +729,24 @@ class DensitySetter(Setter, ABC):
 
             ag_candidates = transitions["next_observation.achieved_goal"]
 
-            scores = self.fitted_kde.score_samples((ag_candidates  - self.kde_sample_mean) / self.kde_sample_std )
+            scores_flat = self.fitted_kde.score_samples((ag_candidates  - self.kde_sample_mean) / self.kde_sample_std )
+            scores = scores_flat.reshape(self.num_envs, self.num_ag_candidate)
+            normalized_inverse_densities = softmax(scores * self.alpha)
+            normalized_inverse_densities *= -1.  # make negative / reverse order so that lower is better.
 
-            min_density_idx = np.random.permutation(np.argsort(scores)[:self.num_envs])
-            min_density_ags = ag_candidates[min_density_idx]
+            if self.randomize:  # sample proportional to the absolute score
+                abs_goal_values = np.abs(normalized_inverse_densities)
+                normalized_values = abs_goal_values / np.sum(abs_goal_values, axis=1, keepdims=True)
+                chosen_idx = (normalized_values.cumsum(1) > np.random.rand(normalized_values.shape[0])[:, None]).argmax(1)
 
-            goal = np.where(done == 1, min_density_ags, env.goal)
-            env.set_goal(np.copy(goal))
-            observation["desired_goal"] = np.copy(goal)
+            else:
+                chosen_idx = np.argmin(normalized_inverse_densities, axis=1)
+ 
+            #min_density_idx_0 = np.random.permutation(np.argsort(scores_flat)[:self.num_envs])
+            min_density_ags = ag_candidates[chosen_idx]
+
+            #import ipdb;ipdb.set_trace()
+            self.current_goals = min_density_ags
 
         return observation, info, done
 
@@ -482,12 +768,18 @@ class DensitySetter(Setter, ABC):
         self.steps += (1-eval_mode)
 
         if not eval_mode:
+            # Relabel if there is some current goals
+            if self.current_goals is not None:
+                    new_observation, reward, terminated, info = self.process_transition(    
+                                                                            self.current_goals,
+                                                                            new_observation, 
+                                                                            info, 
+                                                                            terminated
+                                                                            )
+
             # Optimize Density Model
             if not self.steps % max(self.density_oe, 1) and self.steps > self.warmup:
-                
-                #pr = cProfile.Profile()
-                #pr.enable()
-                
+
                 self.density_opt_steps+=1
                 self.kde_ready = True
 
@@ -526,12 +818,11 @@ class DensitySetter(Setter, ABC):
 
                 self.fitted_kde = self.kde.fit(kde_samples)
 
-                #pr.disable()
-                #s = io.StringIO()
-                #sortby = SortKey.CUMULATIVE
-                #ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-                #ps.print_stats()
-                #print(s.getvalue())
+
+                # Reset current goals
+                #idx_ag_candidates = np.random.randint(kde_samples.shape[0], size = self.num_ag_candidate)
+
+                #import ipdb;ipdb.set_trace()
 
 
         return new_observation, reward, terminated, truncated, info        

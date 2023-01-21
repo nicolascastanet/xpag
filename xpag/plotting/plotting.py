@@ -197,16 +197,16 @@ def update_csv(
 
 def make_test_tensor(x_min, x_max, y_min, y_max, env, nbh=2):
     h = 0.05*nbh
-    xx, yy = np.meshgrid(np.arange(x_min*2, x_max*2, h),
-                         np.arange(y_min*2, y_max*2, h))
+    xx, yy = np.meshgrid(np.arange(x_min, x_max, h),
+                         np.arange(y_min, y_max, h))
     
     test_goals = torch.from_numpy(np.c_[xx.ravel(), yy.ravel()]).type(torch.FloatTensor)
-    init_obs_batch = torch.from_numpy(env.init_qpos[0]
-                                    ).type(torch.FloatTensor
-                                    ).repeat(test_goals.shape[0],1)
-
+    #init_obs_batch = torch.from_numpy(env.init_qpos[0]
+    #                                ).type(torch.FloatTensor
+    #                                ).repeat(test_goals.shape[0],1)
+    #torch.cat((init_obs_batch, test_goals), 1)
     
-    return torch.cat((init_obs_batch, test_goals), 1), xx, yy
+    return test_goals, xx, yy
 
 
 
@@ -253,7 +253,7 @@ def plot_decision_boundary(model, X, Y, env, step, save_dir):
     fig.savefig(filename, dpi=200)
 
 
-def plot_particles(particles, criterion, env, steps, save_dir):
+def plot_particles(particles, criterion, steps, save_dir, env=None):
     from matplotlib import figure
     import matplotlib.pyplot as plt
 
@@ -263,10 +263,10 @@ def plot_particles(particles, criterion, env, steps, save_dir):
 
     xy_min = -1
     xy_max = 6
-    if hasattr(env, "plot"):
+    if env is not None and hasattr(env, "plot"):
         env.plot(ax, xy_min=xy_min, xy_max=xy_max)
 
-    #test_tensor, xx, yy = make_test_tensor(xy_min, xy_max, xy_min, xy_max, env, nbh=2)
+    #test_tensor, xx, yy = make_test_tensor(1., 1.5, 0.4, 1.2, env, nbh=2)
     #test_tensor = test_tensor.to(device)
 #
     #with torch.no_grad():
@@ -298,17 +298,17 @@ def plot_prior(achieved_g, env,  steps, save_dir, prior=None):
     ax = fig.subplots(1)
     device = torch.device("cuda")
 
-    xy_min = -1
+    xy_min = 1
     xy_max = 6
     if hasattr(env, "plot"):
         env.plot(ax, xy_min=xy_min, xy_max=xy_max)
 
-    #test_tensor, xx, yy = make_test_tensor(xy_min, xy_max, xy_min, xy_max, env, nbh=2)
-    #test_tensor = test_tensor.to(device)
-    #
-    #with torch.no_grad():
-    #    pred = prior.log_prob(test_tensor[:,2:], log=False)
-    #    Z = pred.reshape(xx.shape)
+    test_tensor, xx, yy = make_test_tensor(1., 1.5, 0.4, 1.2, env, nbh=1)
+    test_tensor = test_tensor.to(device)
+    
+    with torch.no_grad():
+        pred = prior.log_prob(test_tensor, log=False)
+        Z = pred.reshape(xx.shape)
 
     os.makedirs(os.path.join(os.path.expanduser(save_dir), "plots", "prior"), exist_ok=True)
     filename = os.path.join(
@@ -317,7 +317,7 @@ def plot_prior(achieved_g, env,  steps, save_dir, prior=None):
                 f"{steps:12}.png".replace(" ", "0"),
             )
 #
-    #cb = ax.contourf(xx, yy, Z.detach().cpu(), cmap='RdBu', alpha=0.25)
-    #cbar = fig.colorbar(cb, shrink = 0.5,ax=ax)
+    cb = ax.contourf(xx, yy, Z.detach().cpu(), cmap='RdBu', alpha=0.25)
+    cbar = fig.colorbar(cb, shrink = 0.5,ax=ax)
     ax.scatter(achieved_g[:,0], achieved_g[:,1])
     fig.savefig(filename, dpi=200)

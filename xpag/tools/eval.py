@@ -116,6 +116,8 @@ def single_rollout_eval(
     save_episode: bool = False,
     env_datatype: Optional[DataType] = None,
     seed: Optional[int] = None,
+    log: bool = True,
+    force_goal: np.array = None
 ):
     """Evaluation performed on a single run"""
     master_rng = np.random.RandomState(
@@ -127,9 +129,15 @@ def single_rollout_eval(
         *eval_env.reset(seed=master_rng.randint(1e9)),
         eval_mode=True,
     )
+    
+    if force_goal is not None:
+        eval_env.goal = np.copy(force_goal)
+        observation['desired_goal'] = np.copy(force_goal)
+    
     if save_episode and save_dir is not None:
         save_ep = SaveEpisode(eval_env, env_info)
         save_ep.update()
+        
     done = np.array(False)
     cumulated_reward = 0.0
     step_list = []
@@ -161,15 +169,16 @@ def single_rollout_eval(
             {"observation": observation, "next_observation": next_observation}
         )
         observation = next_observation
-    eval_log(
-        steps,
-        interval_time,
-        cumulated_reward,
-        None if not env_info["is_goalenv"] else info["is_success"].mean(),
-        env_info,
-        agent,
-        save_dir,
-    )
+    if log:
+        eval_log(
+            steps,
+            interval_time,
+            cumulated_reward,
+            None if not env_info["is_goalenv"] else info["is_success"].mean(),
+            env_info,
+            agent,
+            save_dir,
+        )
     if plot_projection is not None and save_dir is not None:
         os.makedirs(os.path.join(os.path.expanduser(save_dir), "plots", "episodes"), exist_ok=True)
         single_episode_plot(

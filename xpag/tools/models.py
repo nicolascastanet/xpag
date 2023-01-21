@@ -92,9 +92,11 @@ class MLP(nn.Module):
             layers = list(map(layer_init, layers))
         self.f = nn.Sequential(*layers)
 
-    def forward(self, x):
-        return torch.sigmoid(self.f(x))
-
+    def forward(self, x, sig=True):
+        if sig:
+            return torch.sigmoid(self.f(x))
+        else:
+            return self.f(x)
 
 
 
