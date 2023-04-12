@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 from imblearn.over_sampling import RandomOverSampler
 import os
+import math
 from typing import Callable
 from abc import ABC, abstractmethod
 from sklearn.linear_model import SGDClassifier
@@ -257,3 +258,57 @@ class OCSVM_0(torch.nn.Module):
         else:
             prob = self.logistic(self.forward(x)[1])
         return prob
+
+
+
+class MultivariateGeneralizedGaussian():
+
+    def __init__(self,mean=0,input_shape=1,alpha=1,beta=2):
+        self.input_shape = input_shape
+        self.mean = mean
+        self.alpha = alpha
+        self.beta = beta
+    
+    def log_prob(self, x, beta=None, alpha=None, log=True):
+
+        if beta is None:
+            beta = self.beta
+        if alpha is None:
+            alpha = self.alpha
+
+        if self.input_shape == 1:
+            g = torch.lgamma(torch.tensor(1/beta))
+            norm = beta/(2*alpha*g)
+            
+            return norm*torch.exp(-(torch.abs(x-self.mean)/alpha)**beta)
+
+        else:
+            
+            in_s = self.input_shape
+
+            # Norm calcul
+            cov = alpha*torch.eye(in_s)
+            g_1 = torch.exp((torch.lgamma(torch.tensor(in_s/2))))
+            g_2 = torch.exp((torch.lgamma(torch.tensor(in_s/(2*beta)))))
+            det = torch.det(cov)**(1/2)
+
+            n_1 = g_1/((math.pi**(in_s/2))*g_2*2**(in_s/(2*beta)))
+            n_2 = beta/det
+
+            norm = torch.log(n_1*n_2+1e-7)
+
+            # Batch Kernel distance
+            bs = x.shape[0]
+            x = x.unsqueeze(1)
+            mean = self.mean.unsqueeze(0)
+            cov = cov.repeat(bs,1,1)
+            res_1 = torch.bmm((x-mean),torch.inverse(cov))
+            res_2 = torch.bmm(res_1,torch.permute(x-mean, (0, 2, 1)))
+
+            #prob = torch.exp(-1/2*res_2**beta)
+            prob = -1/2*res_2**beta
+            
+            if log == False:
+                return torch.exp((norm + prob).squeeze(1))
+            else:
+                return (norm + prob).squeeze(1)

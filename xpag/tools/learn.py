@@ -3,6 +3,7 @@ import re
 import pstats, io
 from pstats import SortKey
 import os
+import matplotlib.pyplot as plt
 import numpy as np
 from xpag.tools.eval import single_rollout_eval, multiple_rollout_eval
 from xpag.tools.utils import get_datatype, datatype_convert, hstack, logical_or
@@ -18,7 +19,6 @@ from typing import Dict, Any, Union, List, Optional, Callable
 def learn(
     env,
     eval_env,
-    mult_eval_env,
     env_info: Dict[str, Any],
     agent: Agent,
     buffer: Buffer,
@@ -36,6 +36,9 @@ def learn(
     custom_eval_function: Optional[Callable] = None,
     additional_step_keys: Optional[List[str]] = None,
     seed: Optional[int] = None,
+    mult_eval_env = None,
+    force_eval_goal_fn = None,
+    plot_goals = False,
 ):
     """
     The function that runs the main training loop.
@@ -108,8 +111,8 @@ def learn(
     else:
         rollout_eval = custom_eval_function
 
-    eval_cpt = 0
     for i in range(max_steps // env_info["num_envs"]):
+        
         if not i % max(evaluate_every_x_steps // env_info["num_envs"], 1):
             rollout_eval(
                 i * env_info["num_envs"],
@@ -123,28 +126,60 @@ def learn(
                 env_datatype=env_datatype,
                 seed=master_rng.randint(1e9),
             )
+            
+            if i > 0:
+                
+                pr.disable()
+                s = io.StringIO()
+                sortby = SortKey.CUMULATIVE
+                ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+                ps.print_stats(10)
+                print(s.getvalue())
+            
+            
+            
+            pr = cProfile.Profile()
+            
 
-            multiple_rollout_eval(
-                i * env_info["num_envs"],
-                mult_eval_env,
-                env_info,
-                agent,
-                setter,
-                save_dir=save_dir,
-                env_datatype=env_datatype,
-                seed=master_rng.randint(1e9),
-            )
-
-
-            #eval_cpt+=1
-#
-            #if eval_cpt==3:
-            #    pr = cProfile.Profile()
-            #    pr.enable()
-            #    print("#"*20)
-            #    print("start profiling")
-            #    print("#"*20)
-
+            if mult_eval_env is not None:
+                success = multiple_rollout_eval(
+                    i * env_info["num_envs"],
+                    mult_eval_env,
+                    env_info,
+                    agent,
+                    setter,
+                    save_dir=save_dir,
+                    env_datatype=env_datatype,
+                    seed=master_rng.randint(1e9),
+                    goal_fn=force_eval_goal_fn
+                )
+                
+                if plot_projection is not None:
+                    
+                    # WARNING ! Only valid for sibrivalry custom maze env
+                    
+                    size = int(eval_env.size_max[0] + 1)
+                    success_array = np.array(success).reshape(size**2,-1,1)
+                    succ = success_array.mean(axis=1)
+                    
+                    eval_env.plot()
+                    plt.imshow(succ.reshape(size,-1).swapaxes(0,1),origin='lower',extent=(-0.5,size-0.5,-0.5,size-0.5),vmin=0,vmax=1, cmap='RdBu', alpha=0.5)
+                    #plt.title("Average Success ({}) : {} %".format(method,str(succ.mean())[:4]))
+                    cbar = plt.colorbar()
+                    for (v,k),label in np.ndenumerate(succ.reshape(size,-1).swapaxes(0,1)):
+                        plt.text(k,v,round(label,2),ha='center',va='center')
+                    plt.show()
+                    cbar.set_label('proba', rotation=270, labelpad=15)
+                    os.makedirs(os.path.join(os.path.expanduser(save_dir), "plots", "grid_eval"), exist_ok=True)
+                    steps = i * env_info["num_envs"]
+                    grid_eval_path = os.path.join(
+                            os.path.expanduser(save_dir),
+                            "plots", "grid_eval",
+                            f"{steps:12}.png".replace(" ", "0")
+                    )
+                    plt.savefig(grid_eval_path, bbox_inches='tight')
+                    
+            
             if env_info['is_goalenv'] and i > 0:
                 buffers = buffer.pre_sample()
                 episode_max = buffer.current_size
@@ -152,11 +187,11 @@ def learn(
                 last_episode_idxs = np.arange(episode_max - episode_range, episode_max - env_info["num_envs"])
                     
                 # Visualisation of achievd and behavior goals
-                #plot_achieved_goals(buffers, last_episode_idxs, i*env_info["num_envs"], save_dir)
+                if plot_goals:
+                    plot_achieved_goals(buffers, last_episode_idxs, i*env_info["num_envs"], save_dir)
                 intrinsic_success = buffers["is_success"][last_episode_idxs].max(axis=1).mean()
                 update_csv("intrinsic_success", intrinsic_success, i*env_info["num_envs"], save_dir)
-
-                #import ipdb;ipdb.set_trace()
+      
 
         if not i % max(save_agent_every_x_steps // env_info["num_envs"], 1):
             if save_dir is not None:
@@ -183,10 +218,14 @@ def learn(
 
         
         action = datatype_convert(action, env_datatype)
+        
+        pr.enable()
 
         next_observation, reward, terminated, truncated, info = setter.step(
             env, observation, action, action_info, *env.step(action)
         )
+        
+        pr.disable()
 
         step = {
             "observation": observation,
@@ -205,6 +244,8 @@ def learn(
 
         buffer.insert(step)
         observation = next_observation
+        
+        pr.enable()
 
         done = logical_or(terminated, truncated)
         if done.max():
@@ -216,6 +257,8 @@ def learn(
                 *env.reset_done(done, seed=master_rng.randint(1e9)),
                 done,
             )
+            
+        pr.disable()
 
  
 
@@ -328,12 +371,25 @@ def learn_change_env(
 
     for i in range(max_steps // env_info["num_envs"]):
         # Change the environment dynamic at the right step
-        if i * env_info["num_envs"] > change_env_steps_list[env_idx]:
+        if env_idx < len(change_env_steps_list) and i * env_info["num_envs"] > change_env_steps_list[env_idx]:
+            
+            # End all running episode
+            if episodic_buffer:
+                buffer.store_done(np.array([[True]*env_info["num_envs"]]).reshape(-1,1))
+            
             env_idx+=1
             env = env_list[env_idx]
             eval_env = eval_env_list[env_idx]
             mult_eval_env = mult_eval_env_list[env_idx]
-    
+            
+            # Init new env
+            reset_obs, reset_info = env.reset(seed=master_rng.randint(1e9))
+            
+            env_datatype = get_datatype(
+            reset_obs if not env_info["is_goalenv"] else reset_obs["observation"]
+                )   
+            observation, _ = setter.reset(env, reset_obs, reset_info)
+
         
         if not i % max(evaluate_every_x_steps // env_info["num_envs"], 1):
             rollout_eval(
@@ -421,6 +477,7 @@ def learn_change_env(
         observation = next_observation
 
         done = logical_or(terminated, truncated)
+        
         if done.max():
             # use store_done() if the buffer is an episodic buffer
             if episodic_buffer:

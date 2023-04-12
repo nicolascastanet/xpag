@@ -33,7 +33,7 @@ def check_goalenv(env) -> bool:
     return True
 
 
-def gymnasium_vec_env_(env_name, num_envs, wrap_function=None, xml_file=None):
+def gymnasium_vec_env_(env_name, num_envs, max_episode_steps, wrap_function=None, xml_file=None):
     if wrap_function is None:
 
         def wrap_function(x):
@@ -71,7 +71,7 @@ def gymnasium_vec_env_(env_name, num_envs, wrap_function=None, xml_file=None):
         max_episode_steps = env.max_episode_steps
         env_type = "Gym"
     else:
-        dummy_env = gym.make(env_name, xml_file=xml_file)
+        dummy_env = gym.make(env_name, max_episode_steps=max_episode_steps, xml_file=xml_file)
         # We force the env to have either a standard gym time limit (with the max number
         # of steps defined in .spec.max_episode_steps), or the max number of steps
         # defined in .max_episode_steps (and in this case we trust the environment
@@ -120,9 +120,9 @@ def gymnasium_vec_env_(env_name, num_envs, wrap_function=None, xml_file=None):
                 ResetDoneVecWrapper(
                     AsyncVectorEnv(
                         [
-                            (lambda: gym.make(env_name, xml_file=xml_file))
+                            (lambda: gym.make(env_name, max_episode_steps=max_episode_steps, xml_file=xml_file))
                             if hasattr(dummy_env, "reset_done")
-                            else (lambda: ResetDoneWrapper(gym.make(env_name, xml_file=xml_file)))
+                            else (lambda: ResetDoneWrapper(gym.make(env_name,max_episode_steps=max_episode_steps, xml_file=xml_file)))
                         ]
                         * num_envs,
                         worker=_worker_shared_memory_no_auto_reset,
@@ -154,53 +154,11 @@ def gymnasium_vec_env_(env_name, num_envs, wrap_function=None, xml_file=None):
     return env, env_info, dummy_env
 
 
-def gymnasium_vec_env(env_name: str, num_envs: int, wrap_function: Callable = None, xml_file: str = None):
-    env, env_info, dummy_env = gymnasium_vec_env_(env_name, num_envs, wrap_function, xml_file=xml_file)
-    eval_env, _, _ = gymnasium_vec_env_(env_name, 1, wrap_function, xml_file=xml_file)
+def gymnasium_vec_env(env_name: str, num_envs: int, max_ep_steps: int, wrap_function: Callable = None, xml_file: str = None):
+    env, env_info, dummy_env = gymnasium_vec_env_(env_name, num_envs, max_ep_steps, wrap_function, xml_file=xml_file)
+    eval_env, _, _ = gymnasium_vec_env_(env_name, 1,  max_ep_steps, wrap_function, xml_file=xml_file)
     return env, eval_env, env_info, dummy_env
 
-
-def make_async_env(env_fn, num_envs, max_ep_steps):
-    env = ResetDoneVecWrapper(
-                AsyncVectorEnv(
-                    [   (env_fn)
-                        if hasattr(env, "reset_done")
-                        else (env_fn)
-                    ]
-                    * num_envs,
-                    worker=_worker_shared_memory_no_auto_reset,
-                ),
-                max_ep_steps,
-            )
-    return env
-
-
-
-def custom_vec_env(env_fn, eval_env_fn, max_ep_steps, num_envs_train: int, num_env_eval_mult: int):
-    
-    env = make_async_env(env_fn, num_envs_train, max_ep_steps)
-    eval_env = wrap_function(
-                ResetDoneVecWrapper(
-                    dummy_env,
-                    max_episode_steps
-                )
-            )
-    eval_env.num_envs = 1
-
-    eval_env_mult = make_async_env(eval_env_fn, num_envs_eval_mult, max_ep_steps)
-
-    import ipdb;ipdb.set_trace()
-    env_info = {
-        "env_type": env_type,
-        "name": env_name,
-        "is_goalenv": is_goalenv,
-        "num_envs": num_envs,
-        "max_episode_steps": env.max_episode_steps,
-        "action_space": env.action_space,
-        "single_action_space": (env.action_space if num_envs==1 else env.single_action_space),
-    }
-
-    return env, eval_env, eval_env_mult, env_info
 
 
 class ResetDoneVecWrapper(gym.Wrapper):
@@ -229,13 +187,13 @@ class ResetDoneVecWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, terminated, truncated, info_ = self.env.step(action)
-
+        
         info_["is_success"] = (
             (info_["is_success"] if len(info_["is_success"].shape) == 2 else info_["is_success"].reshape(-1,1))
             if "is_success" in info_
             else np.array([False] * self.num_envs).reshape((self.num_envs, 1))
         )
-
+        
         return (
             obs,
             reward.reshape((self.num_envs, -1)),

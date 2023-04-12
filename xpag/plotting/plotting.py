@@ -54,6 +54,7 @@ def single_episode_plot(
     episode_length = len(step_list)
     goalenv = False
     projection_dimension = None
+    
     for t, step in enumerate(step_list):
         if (
             isinstance(step["observation"], dict)
@@ -64,7 +65,7 @@ def single_episode_plot(
                 t,
                 projection_function(
                     datatype_convert(
-                        step["observation"]["achieved_goal"][0], DataType.NUMPY
+                        step["observation"]["achieved_goal"].reshape(1,-1)[0], DataType.NUMPY
                     )
                 ),
             )
@@ -72,7 +73,7 @@ def single_episode_plot(
                 t + 1,
                 projection_function(
                     datatype_convert(
-                        step["next_observation"]["achieved_goal"][0], DataType.NUMPY
+                        step["next_observation"]["achieved_goal"].reshape(1,-1)[0], DataType.NUMPY
                     )
                 ),
             )
@@ -80,7 +81,7 @@ def single_episode_plot(
                 t + 1,
                 projection_function(
                     datatype_convert(
-                        step["observation"]["desired_goal"][0], DataType.NUMPY
+                        step["observation"]["desired_goal"].reshape(1,-1)[0], DataType.NUMPY
                     )
                 ),
             )
@@ -127,11 +128,14 @@ def single_episode_plot(
                 mc.LineCollection(g_lines, colors="green", linewidths=2.0)
             )
 
-    obs_list = np.array(obs_list)
-
+    init_obs = lines[0][0]
+    obs_list = np.concatenate((np.array([init_obs]),np.array(obs_list)))
+    
     ax.scatter(obs_list[:,0], obs_list[:,1], s=10, c="blue")
     ax.add_collection(mc.LineCollection(lines, colors=rgbs, linewidths=1.0))
     fig.savefig(filename, dpi=200)
+    
+    return obs_list
 
     #fig.clf()
     #ax.cla()
@@ -260,11 +264,13 @@ def plot_particles(particles, criterion, steps, save_dir, env=None):
     fig = figure.Figure()
     ax = fig.subplots(1)
     device = torch.device("cuda")
+    
+    #import ipdb;ipdb.set_trace()
 
     xy_min = -1
     xy_max = 6
     if env is not None and hasattr(env, "plot"):
-        env.plot(ax, xy_min=xy_min, xy_max=xy_max)
+        env.plot(ax)#, xy_min=xy_min, xy_max=xy_max)
 
     #test_tensor, xx, yy = make_test_tensor(1., 1.5, 0.4, 1.2, env, nbh=2)
     #test_tensor = test_tensor.to(device)

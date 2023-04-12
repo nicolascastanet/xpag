@@ -13,6 +13,7 @@ from xpag.wrappers.reset_done import ResetDoneWrapper
 from xpag.tools.utils import get_env_dimensions
 
 
+
 def check_goalenv(env) -> bool:
     """
     Checks if an environment is of type 'GoalEnv'.
@@ -143,6 +144,57 @@ def gym_vec_env(env_name: str, num_envs: int, wrap_function: Callable = None):
     return env, eval_env, env_info
 
 
+
+def make_async_env(env_fn, dummy_env, num_envs, max_ep_steps):
+    env = ResetDoneVecWrapper(
+                AsyncVectorEnv(
+                    [env_fn]
+                    * num_envs,
+                    worker=_worker_shared_memory_no_auto_reset,
+                ),
+                max_ep_steps,
+            )
+    return env
+
+
+
+def custom_vec_env(
+                env_fn, 
+                eval_env_fn, 
+                max_ep_steps: int, 
+                num_envs_train: int, 
+                num_envs_eval_mult: int, 
+                name:str="2D_maze"
+            ):
+    
+    dummy_env = eval_env_fn()
+    
+    env = make_async_env(env_fn, dummy_env, num_envs_train, max_ep_steps)
+    
+    is_goalenv = check_goalenv(env)
+    
+    eval_env = ResetDoneVecWrapper(
+                    dummy_env,
+                    max_ep_steps
+                )
+
+    eval_env_mult = make_async_env(eval_env_fn, dummy_env, num_envs_eval_mult, max_ep_steps)    
+    env_info = {
+        "env_type": "custom",
+        "name": name,
+        "is_goalenv": is_goalenv,
+        "num_envs": num_envs_train,
+        "max_episode_steps": env.max_episode_steps,
+        "action_space": env.action_space,
+        "single_action_space": eval_env.action_space,
+        "maze_size":eval_env.size_max,
+    }
+    
+    get_env_dimensions(env_info, is_goalenv, env)
+
+    return env, eval_env, eval_env_mult, env_info
+
+
     
 
 
@@ -150,6 +202,8 @@ class ResetDoneVecWrapper(gym.Wrapper):
     def __init__(self, env: VectorEnv, max_episode_steps: int):
         super().__init__(env)
         self.max_episode_steps = max_episode_steps
+        self.num_envs = (self.env.num_envs if hasattr(self.env, "num_envs")
+                        else 1)
 
     def reset(self, **kwargs):
         obs, info_ = self.env.reset(**kwargs)
@@ -168,17 +222,19 @@ class ResetDoneVecWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, terminated, truncated, info_ = self.env.step(action)
+        
+        
         info_["is_success"] = (
-            info_["is_success"]
-            if "is_success" in info_
-            else np.array([False] * self.num_envs).reshape((self.num_envs, 1))
-        )
-
+                (info_["is_success"] if len(info_["is_success"].shape) == 2 else info_["is_success"].reshape(-1,1))
+                if "is_success" in info_
+                else np.array([False] * self.num_envs).reshape((self.num_envs, 1))
+            )
+        
         return (
             obs,
-            reward.reshape((self.env.num_envs, -1)),
-            terminated.reshape((self.env.num_envs, -1)),
-            truncated.reshape((self.env.num_envs, -1)),
+            reward.reshape((self.num_envs, -1)),
+            np.array(terminated).reshape((self.num_envs, -1)),
+            np.array(truncated).reshape((self.num_envs, -1)),
             info_,
         )
 

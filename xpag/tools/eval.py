@@ -169,6 +169,9 @@ def single_rollout_eval(
             {"observation": observation, "next_observation": next_observation}
         )
         observation = next_observation
+        if force_goal is not None:
+            eval_env.goal = np.copy(force_goal)
+            observation['desired_goal'] = np.copy(force_goal)
     if log:
         eval_log(
             steps,
@@ -179,9 +182,11 @@ def single_rollout_eval(
             agent,
             save_dir,
         )
+    
+    obs_list = None
     if plot_projection is not None and save_dir is not None:
         os.makedirs(os.path.join(os.path.expanduser(save_dir), "plots", "episodes"), exist_ok=True)
-        single_episode_plot(
+        obs_list = single_episode_plot(
             os.path.join(
                 os.path.expanduser(save_dir),
                 "plots", "episodes",
@@ -194,6 +199,8 @@ def single_rollout_eval(
     if save_episode and save_dir is not None:
         save_ep.save(0, os.path.expanduser(save_dir))
     timing()
+    
+    return obs_list
 
 
 
@@ -208,6 +215,7 @@ def multiple_rollout_eval(
     save_dir: Union[str, None] = None,
     env_datatype: Optional[DataType] = None,
     seed: Optional[int] = None,
+    goal_fn: np.array = None
 ):
     """Evaluation performed on a single run"""
     master_rng = np.random.RandomState(
@@ -218,13 +226,25 @@ def multiple_rollout_eval(
         *eval_env.reset(seed=master_rng.randint(1e9)),
         eval_mode=True,
     )
-
+    
+    if goal_fn is not None:
+        # WARNING ! Only valid for sibrivalry custom maze env
+        num_goals =  observation["desired_goal"].shape[0]
+        env_size = env_info["maze_size"]
+        num_grid = int((env_size[0]+1)**2)
+        num_goals_per_grid = num_goals//num_grid
+        desired_goals = goal_fn(num_goals_per_grid)
+        
+        assert observation["desired_goal"].shape == desired_goals.shape
+    else:
+        desired_goals = observation["desired_goal"]
+        
     done = np.array([False]*eval_env.num_envs) 
     while not np.all(done):
         obs = (
             observation
             if not env_info["is_goalenv"]
-            else hstack(observation["observation"], observation["desired_goal"])
+            else hstack(observation["observation"], desired_goals)
         )
         action = agent.select_action(obs, eval_mode=True)
         action_info = {}
@@ -240,7 +260,15 @@ def multiple_rollout_eval(
             *eval_env.step(action),
             eval_mode=True,
         )
+        
+        if goal_fn is not None:
+            dist = np.linalg.norm(next_observation["achieved_goal"] - desired_goals, axis=-1)
+            succ = (dist < 0.15).reshape(-1,1)
+            terminated = np.copy(succ)
+            info["is_success"] = np.copy(succ)
+            
         done = logical_or(terminated, truncated)
         observation = next_observation
     
     update_csv("average success", info["is_success"].mean(), steps, save_dir)
+    return info["is_success"].astype('float32')
