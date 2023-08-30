@@ -117,6 +117,7 @@ def get_env_dimensions(info: dict, is_goalenv: bool, env) -> Dict[str, int]:
     else:
         gymvecenv = False
     dims = {}
+    
     if gymvecenv:
         info["action_dim"] = env.single_action_space.shape[-1]
         info["observation_dim"] = (

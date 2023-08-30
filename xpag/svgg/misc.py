@@ -1,6 +1,27 @@
 import numpy as np
 
 
+def sample_random_buffer(buffer, batch_size):
+    buffers = buffer.pre_sample()
+    rollout_batch_size = buffers["episode_length"].shape[0] # buffer current size
+    
+    episode_idxs = np.random.choice(
+        rollout_batch_size,
+        size=batch_size,
+        replace=True,
+        p=buffers["episode_length"][:, 0, 0]
+        / buffers["episode_length"][:, 0, 0].sum(),
+                )
+
+    t_max_episodes = buffers["episode_length"][episode_idxs, 0].flatten()
+    t_samples = np.random.randint(t_max_episodes)
+    transitions = {
+            key: buffers[key][episode_idxs, t_samples] for key in buffers.keys()
+        }
+    
+    return transitions
+
+
 def softmax(X, theta=1.0, axis=None):
   """
     Compute the softmax of each element along an axis of X.

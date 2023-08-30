@@ -58,16 +58,21 @@ class AlphaBetaDifficulty(Criterion, ABC):
         self.prior = prior
         self.only_prior = False
         self.table_fetch = False
+        self.convert_to_embed = None
 
 
     def log_prob(self, goals, eval_mode=False, log=True):
         
+        if self.convert_to_embed is not None:
+            init_state = torch.from_numpy(self.convert_to_embed(self.init_state.numpy())
+                                          ).type(torch.FloatTensor)
+        
         if self.dist_init is not None:
             init_obs_batch = self.dist_init.sample((goals.shape[0],)).to(self.device)
         else:
-            init_obs_batch = self.init_state.repeat(goals.shape[0],1).to(self.device)
+            init_obs_batch = init_state.repeat(goals.shape[0],1).to(self.device)    
             
-        if self.prior is not None:    
+        if self.prior is not None:
             prior_log_prob = self.prior.log_prob(goals)
                     
             if self.only_prior:
@@ -77,7 +82,7 @@ class AlphaBetaDifficulty(Criterion, ABC):
             goals = self.relabel_fetch_goals(goals)
             init_obs_batch = self.relabel_fetch_goals(init_obs_batch)
         
-
+        
         goals_init_obs = torch.cat((init_obs_batch,goals),dim=1)
         probas = self.model(goals_init_obs)
 

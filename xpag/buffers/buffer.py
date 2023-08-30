@@ -182,8 +182,12 @@ class DefaultEpisodicBuffer(EpisodicBuffer):
         for key in self.keys:
             if isinstance(step[key], dict):
                 for k in step[key]:
-                    assert len(step[key][k].shape) == 2
-                    self.dict_sizes[key + "." + k] = step[key][k].shape[1]
+                    if 'pixel' in k:
+                        assert len(step[key][k].shape) == 4 # RGB images
+                        self.dict_sizes[key + "." + k] = step[key][k].shape[1:]
+                    else:
+                        assert len(step[key][k].shape) == 2
+                        self.dict_sizes[key + "." + k] = step[key][k].shape[1]
             else:
                 assert len(step[key].shape) == 2, (
                     f"step[{key}] must be 2-dimensional (e.g. shape "
@@ -193,7 +197,16 @@ class DefaultEpisodicBuffer(EpisodicBuffer):
                 self.dict_sizes[key] = step[key].shape[1]
         self.dict_sizes["episode_length"] = 1
         for key in self.dict_sizes:
-            self.buffers[key] = np.zeros([self.size, self.T, self.dict_sizes[key]])
+            if isinstance(self.dict_sizes[key], int):
+                self.buffers[key] = np.zeros([self.size, self.T, self.dict_sizes[key]])
+            elif isinstance(self.dict_sizes[key], tuple):
+                assert len(self.dict_sizes[key]) == 3 # RGB images
+                rgb_channels, x_dim, y_dim = self.dict_sizes[key]
+                self.buffers[key] = np.zeros([self.size, self.T, rgb_channels, x_dim, y_dim])
+            else:
+                raise TypeError("Incorrect or non-matching input types.")
+                
+                
         self.current_t = np.zeros(self.num_envs).astype("int")
         self.zeros = lambda i: np.zeros(i).astype("int")
         self.where = np.where
@@ -206,6 +219,7 @@ class DefaultEpisodicBuffer(EpisodicBuffer):
         for key in self.keys:
             if isinstance(step[key], dict):
                 for k in step[key]:
+                    
                     self.buffers[key + "." + k][
                         self.current_idxs, self.current_t, :
                     ] = datatype_convert(step[key][k], DataType.NUMPY).reshape(

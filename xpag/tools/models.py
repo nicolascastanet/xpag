@@ -1,3 +1,5 @@
+import matplotlib.pyplot as plt
+import torchvision
 import torch
 import torch.nn as nn
 from torch.utils import data
@@ -9,6 +11,7 @@ import math
 from typing import Callable
 from abc import ABC, abstractmethod
 from sklearn.linear_model import SGDClassifier
+import seaborn
 
 
 
@@ -52,6 +55,186 @@ def train_torch_model(
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+                
+                
+def train_vae_model(
+            vae: nn.Module,
+            optimizer: torch.optim.Optimizer,
+            dataloader: torch.utils.data.DataLoader,
+            nb_steps=100,
+            print_loss=True
+            ):
+    # Set train mode for both the encoder and the decoder
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    vae.train()
+    loss_list = []
+    # Iterate the dataloader (we do not need the label values, this is unsupervised learning)
+    for epoch in range(nb_steps):
+        train_loss = 0.0
+        for x in dataloader:
+            # Move tensor to the proper device
+            x = x[0].to(device)
+            x_hat = vae(x)
+            
+            #loss = F.mse_loss(x_hat, x, size_average=False) + 0.5*vae.encoder.kl
+            # Evaluate loss
+            loss = F.binary_cross_entropy(x_hat,x, size_average=False) + vae.encoder.kl
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            train_loss+=loss.item()
+            
+        
+        batch_loss = train_loss / len(dataloader.dataset)
+        loss_list.append(batch_loss)
+        
+        if print_loss:
+            print(f'epoch {epoch}:',batch_loss)
+            
+        if batch_loss < 20:
+            return loss_list
+            
+    return loss_list
+    #return train_loss / len(dataloader.dataset)
+    
+    
+def plot_ae_outputs(epoch, encoder, decoder, path, dataset, t_idx, n=10):
+    
+    plt.figure(figsize=(16,4.5))
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    for i in range(n):
+      ax = plt.subplot(2,n,i+1)
+      #img = dataset[t_idx[i]][0].unsqueeze(0).to(device) # for torch input
+      img = torch.from_numpy(dataset[t_idx[i]]).unsqueeze(0).to(device).type(torch.float) # for numpy input
+      
+      encoder.eval()
+      decoder.eval()
+      with torch.no_grad():
+         rec_img  = decoder(encoder(img))
+      
+      plt.imshow(np.transpose(img.cpu().squeeze().numpy()), cmap='gist_gray')
+      ax.get_xaxis().set_visible(False)
+      ax.get_yaxis().set_visible(False)  
+      if i == n//2:
+        ax.set_title('Original images')
+      ax = plt.subplot(2, n, i + 1 + n)
+      
+      plt.imshow(np.transpose(rec_img.cpu().squeeze().numpy()), cmap='gist_gray')
+      ax.get_xaxis().set_visible(False)
+      ax.get_yaxis().set_visible(False)  
+      if i == n//2:
+         ax.set_title('Reconstructed images')
+         
+    plt.title(f'Epoch {epoch}', fontweight="bold", fontsize=20)
+    plt.savefig(path + f'/epoch_{epoch}.png', format='png', dpi=400)
+    
+   
+def show_image(img):
+        npimg = img.numpy()
+        plt.imshow(np.transpose(npimg))   
+ 
+def ae_plot_gen(step, plot_step, vae, path, writer=None):
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    vae.eval()
+    d = vae.latent_dim
+
+    with torch.no_grad():
+        # sample latent vectors from the normal distribution
+        latent = torch.randn(128, d, device=device)
+
+        # reconstruct images from the latent vectors
+        img_recon = vae.decoder(latent)
+        img_recon = img_recon.cpu()
+
+        fig, ax = plt.subplots(figsize=(20, 8.5))
+        recons_img = torchvision.utils.make_grid(img_recon.data[:100],10,5)
+        show_image(recons_img)
+        plt.axis("off")
+        plt.show()
+        plt.savefig(path + f'/step_{step}.png', format='png', dpi=400)
+        
+        if writer is not None:
+            
+            #writer.add_image(f'images/recons/step_{step}', 
+            #                 torchvision.transforms.functional.rotate(recons_img,180))
+            writer.add_image(f'VAE/goal_generation', torch.transpose(recons_img,1,2), plot_step)
+            
+
+
+def compare_vae_obs(step,
+                    plot_step,
+                    real_obs, 
+                    pixel_obs, 
+                    encoder, 
+                    decoder, 
+                    path,
+                    writer=None,
+                    dist_threshold=0.1,
+                    plot_images_similarity=False
+                ):
+    
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    encoder.eval()
+    d = encoder.latent_dim
+
+    latent_gen = torch.randn(200, d)#, device=device)
+    
+    real_obs_close = []
+    pixel_obs_close = []
+    idxs = []
+    
+    with torch.no_grad():
+        # Latent code of real images
+        latent_encode = encoder(pixel_obs)
+        
+        # Generated decoded images from latent space sampling 
+        img_gen = decoder(latent_gen.to(device))
+        img_gen = img_gen.cpu().numpy()
+        
+    for lg in latent_gen:
+        # Compute L2 norm between latent codes
+        diff = np.linalg.norm((latent_encode - lg).numpy(), axis=-1)
+        argmin = np.argmin(diff)
+        #if diff[argmin] > dist_threshold:
+        #    continue
+        #else:
+        real_obs_close.append(real_obs[argmin])
+        pixel_obs_close.append(pixel_obs[argmin].numpy())
+        idxs.append(argmin)
+        
+    real_obs = np.array(real_obs_close)
+    
+    if plot_images_similarity:
+        n = 10
+        fig = plt.figure(figsize=(16,4.5))
+        for i in range(n):
+            ax = plt.subplot(2,n,i+1)
+            real_img = pixel_obs_close[i]
+            gen_img = img_gen[i]
+
+            plt.imshow(np.transpose(gen_img), cmap='gist_gray')
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)  
+            if i == n//2:
+                ax.set_title('generated images')
+            ax = plt.subplot(2, n, i + 1 + n)
+
+            plt.imshow(np.transpose(real_img), cmap='gist_gray')
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)  
+            if i == n//2:
+                ax.set_title('Corresponding real images')
+
+
+        plt.title(f'Step {step}', fontweight="bold", fontsize=20)
+        plt.savefig(path + f'/step_{step}.png', format='png', dpi=400)
+        
+        if writer is not None:
+            writer.add_figure('VAE/real_goal_from_latent', fig, plot_step)
+        
+    return real_obs
+    
 
 
 class MLP(nn.Module):

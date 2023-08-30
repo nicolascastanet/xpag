@@ -6,11 +6,13 @@ import sys
 import inspect
 from typing import Callable
 import numpy as np
+import torch
 import gym
 from gym.vector.utils import write_to_shared_memory, concatenate, create_empty_array
 from gym.vector import VectorEnv, AsyncVectorEnv
 from xpag.wrappers.reset_done import ResetDoneWrapper
 from xpag.tools.utils import get_env_dimensions
+import copy
 
 
 
@@ -145,17 +147,25 @@ def gym_vec_env(env_name: str, num_envs: int, wrap_function: Callable = None):
 
 
 
-def make_async_env(env_fn, dummy_env, num_envs, max_ep_steps):
-    env = ResetDoneVecWrapper(
-                AsyncVectorEnv(
+#def make_async_env(env_fn, dummy_env, num_envs, max_ep_steps):
+#    env = ResetDoneVecWrapper(
+#                AsyncVectorEnv(
+#                    [env_fn]
+#                    * num_envs,
+#                    worker=_worker_shared_memory_no_auto_reset,
+#                ),
+#                max_ep_steps,
+#            )
+#    return env
+
+
+def make_async_env(env_fn, num_envs):
+    env = AsyncVectorEnv(
                     [env_fn]
                     * num_envs,
                     worker=_worker_shared_memory_no_auto_reset,
-                ),
-                max_ep_steps,
-            )
+                )
     return env
-
 
 
 def custom_vec_env(
@@ -164,21 +174,29 @@ def custom_vec_env(
                 max_ep_steps: int, 
                 num_envs_train: int, 
                 num_envs_eval_mult: int, 
-                name:str="2D_maze"
+                name:str="2D_maze",
+                embed=None
             ):
     
-    dummy_env = eval_env_fn()
+    eval_env = eval_env_fn()
+    dummy_env = copy.deepcopy(eval_env)
     
-    env = make_async_env(env_fn, dummy_env, num_envs_train, max_ep_steps)
+    env = make_async_env(env_fn, num_envs_train)
     
     is_goalenv = check_goalenv(env)
     
-    eval_env = ResetDoneVecWrapper(
-                    dummy_env,
-                    max_ep_steps
-                )
-
-    eval_env_mult = make_async_env(eval_env_fn, dummy_env, num_envs_eval_mult, max_ep_steps)    
+    eval_env_mult = make_async_env(eval_env_fn, num_envs_eval_mult)
+    
+    if embed is not None:
+        env = EmbedVecWrapper(env, dummy_env, embed)
+        eval_env = EmbedVecWrapper(dummy_env, dummy_env, embed)
+        eval_env_mult = EmbedVecWrapper(eval_env_mult, dummy_env, embed)
+        
+    env = ResetDoneVecWrapper(env,max_ep_steps)
+    eval_env = ResetDoneVecWrapper(eval_env,max_ep_steps)
+    eval_env_mult = ResetDoneVecWrapper(eval_env_mult,max_ep_steps)
+    
+        
     env_info = {
         "env_type": "custom",
         "name": name,
@@ -188,6 +206,7 @@ def custom_vec_env(
         "action_space": env.action_space,
         "single_action_space": eval_env.action_space,
         "maze_size":eval_env.size_max,
+        "from_pixels": bool(embed)
     }
     
     get_env_dimensions(env_info, is_goalenv, env)
@@ -195,6 +214,100 @@ def custom_vec_env(
     return env, eval_env, eval_env_mult, env_info
 
 
+class EmbedVecWrapper(gym.ObservationWrapper):
+    """_summary_
+    Pixel obs Wrapper for 2D Sibrivalry maze
+    Args:
+        gym (_type_): _description_
+    """
+    def __init__(self, env: VectorEnv, dummy_env, embed):
+        super().__init__(env)
+        self.env = env
+        self.embed = embed
+        self.latent_dim = embed.latent_dim 
+        self.rgb_maze = dummy_env.get_rgb_maze()
+        
+        if not hasattr(self, "num_envs"):
+            self.num_envs = 1
+        
+    def observation(self, obs):
+        observation = obs['observation']
+        desired_goal = obs['desired_goal']
+        achieved_goal = obs['achieved_goal']
+        
+        new_keys = {'observation':'init_obs', 'desired_goal':'init_dg', 'achieved_goal':'init_ag'}
+        obs = dict((new_keys[key], value) for (key, value) in obs.items())
+        
+        batch_obs = np.concatenate((observation, desired_goal, achieved_goal)).reshape(-1,2)
+        batch_pixels_obs = self.torch(np.swapaxes(self.convert_2D_to_pixel(batch_obs),3,1))
+        
+        with torch.no_grad():
+            batch_latent_obs = self.embed(batch_pixels_obs)
+        
+        #pixel_obs, pixel_dg, _ = torch.split(batch_pixels_obs, self.num_envs)
+        observation, desired_goal, achieved_goal = torch.split(batch_latent_obs, self.num_envs)
+        
+        if self.num_envs == 1:
+            observation = observation.squeeze()
+            desired_goal = desired_goal.squeeze()
+            achieved_goal = achieved_goal.squeeze()
+            
+        else:
+            assert observation.shape == torch.Size([self.num_envs, self.latent_dim])
+            assert desired_goal.shape == torch.Size([self.num_envs, self.latent_dim])
+            assert achieved_goal.shape == torch.Size([self.num_envs, self.latent_dim])
+                
+        # reconvert to numpy
+        # Latent space is used for classic RL operations
+        obs['observation'] = observation.numpy()
+        obs['desired_goal'] = desired_goal.numpy()
+        obs['achieved_goal'] = achieved_goal.numpy()
+        
+        return obs
+
+        
+    def convert_2D_to_pixel(self, obs, rg=7):
+        
+        x_obs = (65-obs[:,-1]*11.4).astype(int)
+        y_obs = (20+obs[:,0]*11.4).astype(int)
+        coord = np.column_stack((y_obs, x_obs))
+        fig_array_pixels = np.tile(self.rgb_maze[np.newaxis, ...], 
+                                      (obs.shape[0], 1, 1, 1)
+                                    )
+            
+        # Calculate the boundaries for the surrounding pixels
+        left = np.maximum(coord[:, 0] - rg, 0)
+        right = np.minimum(coord[:, 0] + rg, fig_array_pixels.shape[2])
+        top = np.maximum(coord[:, 1] - rg, 0)
+        bottom = np.minimum(coord[:, 1] + rg, fig_array_pixels.shape[1])
+        
+        mask = np.ones((rg*2, rg*2), dtype=bool)
+        
+        for i in range(len(coord)):
+            fig_array_pixels[i, top[i]:bottom[i], left[i]:right[i]][mask] = [255, 0, 0]  # Example modification
+            
+        return fig_array_pixels / 256
+    
+    
+    def convert_2D_to_embed(self, obs):
+        """
+        input obs: np.array
+        """
+        batch_pixels_obs = self.torch(np.swapaxes(self.convert_2D_to_pixel(obs.reshape(-1,2)),3,1))
+        with torch.no_grad():
+            batch_latent_obs = self.embed(batch_pixels_obs)
+            
+        if obs.shape[0] == 1:
+            batch_latent_obs = batch_latent_obs.squeeze()
+                
+        return batch_latent_obs.numpy()
+                
+                
+    def torch(self, x):
+        x = torch.from_numpy(x)
+        x = x.type(torch.float)
+        return x
+  
     
 
 
@@ -222,7 +335,6 @@ class ResetDoneVecWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, terminated, truncated, info_ = self.env.step(action)
-        
         
         info_["is_success"] = (
                 (info_["is_success"] if len(info_["is_success"].shape) == 2 else info_["is_success"].reshape(-1,1))

@@ -185,7 +185,8 @@ def update_csv(
     tag: str, 
     value: float, 
     step: int, 
-    save_dir
+    save_dir,
+    tensorboard_writer=None
 ):
 
     fields = ['step', tag]
@@ -197,6 +198,9 @@ def update_csv(
     with open(path, 'a') as f:
       writer = csv.writer(f)
       writer.writerow([step, value])
+      
+    if tensorboard_writer is not None:
+      tensorboard_writer.add_scalar(tag, value, step)
 
 
 def make_test_tensor(x_min, x_max, y_min, y_max, env, nbh=2):

@@ -128,7 +128,7 @@ def single_rollout_eval(
         eval_env,
         *eval_env.reset(seed=master_rng.randint(1e9)),
         eval_mode=True,
-    )
+    )           
     
     if force_goal is not None:
         eval_env.goal = np.copy(force_goal)
@@ -137,7 +137,7 @@ def single_rollout_eval(
     if save_episode and save_dir is not None:
         save_ep = SaveEpisode(eval_env, env_info)
         save_ep.update()
-        
+           
     done = np.array(False)
     cumulated_reward = 0.0
     step_list = []
@@ -148,6 +148,7 @@ def single_rollout_eval(
             else hstack(observation["observation"], observation["desired_goal"])
         )
         action = agent.select_action(obs, eval_mode=True)
+        
         action_info = {}
         if isinstance(action, tuple):
             action_info = action[1]
@@ -215,7 +216,8 @@ def multiple_rollout_eval(
     save_dir: Union[str, None] = None,
     env_datatype: Optional[DataType] = None,
     seed: Optional[int] = None,
-    goal_fn: np.array = None
+    goal_fn: np.array = None,
+    writer = None
 ):
     """Evaluation performed on a single run"""
     master_rng = np.random.RandomState(
@@ -234,6 +236,10 @@ def multiple_rollout_eval(
         num_grid = int((env_size[0]+1)**2)
         num_goals_per_grid = num_goals//num_grid
         desired_goals = goal_fn(num_goals_per_grid)
+        
+        if env_info["from_pixels"]:
+            init_goals = desired_goals.copy()
+            desired_goals = eval_env.convert_2D_to_embed(desired_goals)
         
         assert observation["desired_goal"].shape == desired_goals.shape
     else:
@@ -262,13 +268,18 @@ def multiple_rollout_eval(
         )
         
         if goal_fn is not None:
-            dist = np.linalg.norm(next_observation["achieved_goal"] - desired_goals, axis=-1)
+            if env_info["from_pixels"]:
+                dist = np.linalg.norm(next_observation["init_obs"] - init_goals, axis=-1)
+            else:    
+                dist = np.linalg.norm(next_observation["achieved_goal"] - desired_goals, axis=-1)
             succ = (dist < 0.15).reshape(-1,1)
             terminated = np.copy(succ)
             info["is_success"] = np.copy(succ)
             
+              
         done = logical_or(terminated, truncated)
         observation = next_observation
     
-    update_csv("average success", info["is_success"].mean(), steps, save_dir)
+    
+    update_csv("average success", info["is_success"].mean(), steps, save_dir, writer)
     return info["is_success"].astype('float32')

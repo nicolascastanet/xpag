@@ -72,6 +72,8 @@ def gymnasium_vec_env_(env_name, num_envs, max_episode_steps, wrap_function=None
         env_type = "Gym"
     else:
         dummy_env = gym.make(env_name, max_episode_steps=max_episode_steps, xml_file=xml_file)
+        
+        
         # We force the env to have either a standard gym time limit (with the max number
         # of steps defined in .spec.max_episode_steps), or the max number of steps
         # defined in .max_episode_steps (and in this case we trust the environment

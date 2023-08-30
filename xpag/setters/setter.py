@@ -31,6 +31,7 @@ from xpag.plotting.plotting import update_csv, plot_decision_boundary, plot_part
 class Setter(ABC):
     def __init__(self, name: str):
         self.name = name
+        self.sparse_reward = True
 
     @abstractmethod
     def reset(self, env, observation, info, eval_mode=False) -> Tuple[Any, Any]:
@@ -76,17 +77,87 @@ class Setter(ABC):
         obs["desired_goal"] = np.copy(goals)
         
         info["is_success"] = self.eval_env.is_success(obs["achieved_goal"], goals
-        ).reshape((self.num_envs, 1))
+                ).reshape((self.num_envs, 1))
 
         if self.terminated:
             terminated = np.copy(info["is_success"]).reshape((self.num_envs, 1))
 
-        reward = self.eval_env.compute_reward(obs["achieved_goal"], goals, info
-        ).reshape((self.num_envs, 1))
-
+        if self.sparse_reward:
+            reward = self.eval_env.compute_reward(obs["achieved_goal"], goals, info
+            ).reshape((self.num_envs, 1))
+        
+        else:
+            reward = -np.linalg.norm(obs['achieved_goal'] - goals, axis=-1
+                                    ).astype(np.float32
+                                    ).reshape((self.num_envs, 1))
+                                    
         return obs, reward, terminated, info
 
 
+
+class RigSetter(Setter, ABC):
+    def __init__(self, num_envs, eval_env, input_dim):
+        super().__init__("RigSetter")
+        self.num_envs = num_envs
+        self.eval_env = eval_env
+        self.current_goals = None
+        self.terminated = False
+        self.d = input_dim
+        self.current_goals = None
+
+    def reset(self, env, observation, info, eval_mode=False):
+        return observation, info
+
+    def reset_done(self, env, observation, info, done, eval_mode=False):
+
+        if not eval_mode:
+            #print("first reset done !")
+            self.first_reset_done = True
+            # Replace Goals when episode is done
+            new_goals = np.random.randn(self.num_envs, self.d)
+            
+            # Update current goals
+            if self.current_goals is None:
+                self.current_goals = np.copy(new_goals)
+            else:
+                self.current_goals = np.where(done == 1, new_goals, self.current_goals)
+                
+            observation["desired_goal"] = np.copy(self.current_goals)
+
+        return observation, info, done
+
+    def step(
+        self,
+        env,
+        observation,
+        action,
+        action_info,
+        new_observation,
+        reward,
+        terminated,
+        truncated,
+        info,
+        eval_mode=False,
+    ):
+
+        if not eval_mode and self.current_goals is not None:
+            new_observation, reward, terminated, info = self.process_transition(    
+                                                                            self.current_goals,
+                                                                            new_observation, 
+                                                                            info, 
+                                                                            terminated
+                                                                            )
+
+        return new_observation, reward, terminated, truncated, info
+
+    def write_config(self, output_file: str):
+        pass
+
+    def save(self, directory: str):
+        pass
+
+    def load(self, directory: str):
+        pass
 
 
 class DefaultSetter(Setter, ABC):
